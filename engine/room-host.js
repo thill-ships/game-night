@@ -7,10 +7,14 @@ import * as C from './crypto.js';
 import { createRng } from './rng.js';
 import * as kit from './ui/index.js';
 import { loadGames } from '../games/registry.js';
+import { BUILD } from './version.js';
+import { watchUpdates } from './update.js';
 
 const { h, clear, toast, sheet, confirmSheet } = kit;
 const STORE_KEY = 'gn.host.v1';
 const UNDO_MAX = 40;
+const CONTROLLER_GRACE = 120000; // controller offline this long → the next online phone takes over
+const TIMERS = [0, 30, 60, 90];
 
 export async function startHost(root) {
   document.body.className = 'tv';
@@ -23,13 +27,14 @@ export async function startHost(root) {
   if (!R || !R.code) R = freshRoom();
   if (R.game && !byId[R.game.id]) R.game = null;
   R.retired = R.retired || {};
+  if (R.controller === undefined || (R.controller && !R.roster.some((p) => p.pid === R.controller))) R.controller = R.roster[0]?.pid ?? null;
   if (!byId[R.lobby.gameId]) R.lobby = { gameId: games[0].id, options: defaults(games[0]) };
   history.replaceState(null, '', urlWith('host'));
 
   function freshRoom() {
     return {
       code: newRoomCode(), ver: 1, fxSeq: 0,
-      roster: [], pins: {}, pending: {}, retired: {},
+      roster: [], pins: {}, pending: {}, retired: {}, controller: null,
       lobby: { gameId: games[0].id, options: defaults(games[0]) },
       settings: { timer: 0 },
       game: null,
@@ -52,6 +57,8 @@ export async function startHost(root) {
   let onlineSig = '';
   let tvFxSeen = R.fxSeq;   // don't replay effects after a TV refresh
   let forged = 0;
+  const startedAt = Date.now(); // after a TV refresh, nobody counts as long-offline yet
+  let updateReady = null;       // a newer deploy is waiting; applied when no game is running
   const tvLocal = {};       // per-game scratch space for TV renderers
 
   const hostKP = await C.loadKeyPair('host:' + R.code);
@@ -112,13 +119,14 @@ export async function startHost(root) {
   function requestApproval(pid, req) {
     const prev = R.pending[pid];
     R.pending[pid] = { ...req, at: Date.now() };
-    if (!prev || JSON.stringify(prev.key) !== JSON.stringify(req.key) || prev.from !== req.from) { save(); render(); }
+    if (!prev || JSON.stringify(prev.key) !== JSON.stringify(req.key) || prev.from !== req.from) bump(); // the remote phone sees it too
   }
 
   function addPlayer(pid, name, key) {
     seen[pid] = Date.now();
     R.pins[pid] = key || 'plain';
     R.roster.push({ pid, name: uniqueName(name, pid), sitOut: false, plain: !key, pseq: 0 });
+    if (!R.controller) R.controller = pid; // the first phone to join is the remote
     if (R.game && !R.game.over) tryJoinGame(pid);
     bump();
     sendPriv(pid, true);
@@ -169,6 +177,7 @@ export async function startHost(root) {
   function playerIntent(pid, intent) {
     if (!intent || typeof intent.type !== 'string') return 'Bad request';
     if (intent.type === '@leave-room') { removePlayer(pid, false); return null; }
+    if (intent.type === '@ctl') return controlOp(pid, intent);
     if (intent.type.startsWith('@')) return 'Not allowed';
     const G = R.game;
     if (!G) return 'No game is running';
@@ -245,14 +254,18 @@ export async function startHost(root) {
     return err;
   }
   function undo() {
+    const err = undoOp();
+    toast(err || 'Undone', err ? {} : undefined);
+  }
+  function undoOp() {
     const G = R.game;
-    if (!G || !mod()?.undoable || !G.undo.length) { toast('Nothing to undo'); return; }
+    if (!G || !mod()?.undoable || !G.undo.length) return 'Nothing to undo';
     const prev = G.undo.pop();
     G.state = prev.state; G.log = prev.log; G.sched = [];
     G.fx.push({ id: ++R.fxSeq, kind: '@undo', data: {} });
     G.fx = G.fx.slice(-8);
     afterChange([]);
-    toast('Undone');
+    return null;
   }
 
   function tryJoinGame(pid) {
@@ -271,6 +284,7 @@ export async function startHost(root) {
       applyIntent('system', { type: '@leave', pid }, { system: true });
     }
     R.roster = R.roster.filter((p) => p.pid !== pid);
+    if (R.controller === pid) R.controller = (R.roster.find((p) => isOn(p.pid)) || R.roster[0])?.pid ?? null;
     delete R.pins[pid]; delete R.pending[pid]; delete R.retired[pid];
     for (const [k, v] of Object.entries(R.pending)) if (v.from === pid) delete R.pending[k];
     delete shared[pid]; delete nonces[pid]; delete privCache[pid]; delete seen[pid];
@@ -288,13 +302,15 @@ export async function startHost(root) {
     const M = byId[id];
     const seats = again && prevG ? prevG.seats.filter((pid) => player(pid)) : eligibleSeats(M);
     const reason = startReason(M, seats.length);
-    if (reason) { toast(reason, { kind: 'bad' }); return; }
+    if (reason) return reason;
     const options = again && prevG ? prevG.options : { ...defaults(M), ...R.lobby.options };
     let state;
-    try { state = M.setup({ seats: seats.slice(), options, rng }); } catch (e) { console.error(e); toast('Could not start the game', { kind: 'bad' }); return; }
+    try { state = M.setup({ seats: seats.slice(), options, rng }); } catch (e) { console.error(e); return 'Could not start the game'; }
     R.game = { id, seats, options, state, log: [], undo: [], fx: [{ id: ++R.fxSeq, kind: '@start', data: {} }], sched: [], over: false, results: null, deadline: null, startedAt: Date.now() };
     afterChange([]);
+    return null;
   }
+  function tvStart(again) { const err = startGame(again); if (err) toast(err, { kind: 'bad' }); }
   function startReason(M, n) {
     if (n < M.minPlayers) return `${M.name} needs at least ${M.minPlayers} players`;
     if (n > M.maxPlayers) return `${M.name} seats at most ${M.maxPlayers}. Tap "Sit out" for the others.`;
@@ -304,7 +320,98 @@ export async function startHost(root) {
     if (R.game) R.lobby = { gameId: R.game.id, options: { ...R.game.options } };
     R.game = null;
     bump();
+    maybeApplyUpdate();
   }
+
+  // ---------- lobby edits (shared by the TV and the controller phone) ----------
+  function selectGame(id) {
+    if (R.lobby.gameId !== id) { R.lobby = { gameId: id, options: defaults(byId[id]) }; bump(); }
+  }
+  function setOption(id, v) {
+    const M = byId[R.lobby.gameId];
+    R.lobby.options = { ...defaults(M), ...R.lobby.options, [id]: v };
+    bump();
+  }
+  function moveSeat(pid, d) {
+    const i = R.roster.findIndex((p) => p.pid === pid), j = i + d;
+    if (i < 0 || j < 0 || j >= R.roster.length) return;
+    [R.roster[i], R.roster[j]] = [R.roster[j], R.roster[i]];
+    bump();
+  }
+  function setSitOut(pid, v) { const p = player(pid); if (p) { p.sitOut = !!v; bump(); } }
+  function setTimer(sec) { R.settings.timer = sec; if (R.game) R.game.deadline = null; afterChange([]); }
+  function setController(pid) {
+    if (R.controller === pid) return;
+    R.controller = pid;
+    sendTo(pid, { t: 'notice', kind: 'controller' });
+    bump();
+  }
+
+  // ---------- the controller phone ("the remote") ----------
+  // Anything the TV buttons can do, the controller can do from their phone (except New room).
+  function controlOp(pid, x) {
+    const op = x.op;
+    if (op === 'claim') {
+      if (R.controller === pid) return null;
+      if (R.controller && isOn(R.controller)) return `${nameOf(R.controller)} has the remote`;
+      setController(pid);
+      return null;
+    }
+    if (R.controller !== pid) return `Only ${nameOf(R.controller)} can do that (they have the remote)`;
+    const G = R.game;
+    const lobbyOnly = () => (G ? 'Finish this game first' : null);
+    switch (op) {
+      case 'select': {
+        if (lobbyOnly()) return lobbyOnly();
+        if (!games.some((g) => g.id === x.gameId)) return 'Unknown game';
+        selectGame(x.gameId); return null;
+      }
+      case 'option': {
+        if (lobbyOnly()) return lobbyOnly();
+        const o = (byId[R.lobby.gameId].options || []).find((q) => q.id === x.id);
+        if (!o) return 'Unknown option';
+        if (o.type === 'bool' ? typeof x.value !== 'boolean' : !o.values.includes(x.value)) return 'Not an allowed value';
+        setOption(o.id, x.value); return null;
+      }
+      case 'move': if (lobbyOnly()) return lobbyOnly(); moveSeat(x.pid, x.dir < 0 ? -1 : 1); return null;
+      case 'sitOut': if (lobbyOnly()) return lobbyOnly(); setSitOut(x.pid, !!x.value); return null;
+      case 'kick':
+        if (x.pid === pid) return "You can't remove yourself. Hand off the remote first.";
+        if (!player(x.pid)) return 'They already left';
+        removePlayer(x.pid, true); return null;
+      case 'start': if (G && !G.over) return 'A game is already running'; return startGame(false);
+      case 'again': if (!G || !G.over) return 'The game is still going'; return startGame(true);
+      case 'lobby': if (!G) return null; backToLobby(); return null;
+      case 'undo': return undoOp();
+      case 'hostAct':
+        if (!x.intent || typeof x.intent.type !== 'string' || x.intent.type.startsWith('@')) return 'Bad request';
+        return applyIntent('host', x.intent, { byHost: true });
+      case 'actFor':
+        if (!x.intent || typeof x.intent.type !== 'string' || x.intent.type.startsWith('@')) return 'Bad request';
+        if (!G || !G.seats.includes(x.pid)) return "They're not in this game";
+        return applyIntent(x.pid, x.intent, { byHost: true });
+      case 'approve': if (!R.pending[x.pid]) return 'Already handled'; approve(x.pid); return null;
+      case 'deny': if (!R.pending[x.pid]) return 'Already handled'; deny(x.pid); return null;
+      case 'timer': if (!TIMERS.includes(x.sec)) return 'Not an allowed timer'; setTimer(x.sec); return null;
+      case 'handoff': if (!player(x.pid)) return 'They left'; setController(x.pid); return null;
+      default: return 'Unknown action';
+    }
+  }
+
+  // ---------- updates ----------
+  // A newer deploy is out. Reload the TV only when no game is running (state is saved,
+  // so phones just see a short blip). Guarded so a stale CDN can't cause a reload loop.
+  function maybeApplyUpdate() {
+    if (!updateReady) return;
+    if (R.game) { render(); return; } // never mid-game (or on the podium): wait for the lobby
+    const key = 'gn.reloadedFor';
+    if (sessionStorage.getItem(key) === updateReady) { render(); return; }
+    sessionStorage.setItem(key, updateReady);
+    toast('Updating to the latest version…');
+    saveNow();
+    setTimeout(() => location.reload(), 1500);
+  }
+  watchUpdates((build) => { updateReady = build; maybeApplyUpdate(); });
 
   // ---------- publishing ----------
   function bump() {
@@ -366,6 +473,11 @@ export async function startHost(root) {
         spectator: !!G && !G.seats.includes(p.pid), sitOut: !!p.sitOut, pseq: p.pseq || 0,
       })),
       lobby: R.lobby, timer: R.settings.timer, game,
+      controller: R.controller,
+      pending: Object.entries(R.pending).filter(([pid]) => player(pid)).map(([pid, x]) => ({ pid, name: nameOf(pid), fresh: !!x.from })),
+      games: games.map((g) => g.id),
+      canUndo: !!(G && M && M.undoable && G.undo.length && !G.over) || !!(G && G.over && M?.undoable && G.undo.length),
+      build: BUILD,
     };
   }
   function broadcastState() { net.send(stateMsg()); }
@@ -383,6 +495,10 @@ export async function startHost(root) {
       const act = mod().activePids(G.state);
       for (const pid of act) applyIntent('system', { type: 'timeout', pid }, { system: true });
       if (!act.length) save();
+    }
+    if (R.controller && now - Math.max(seen[R.controller] || 0, startedAt) > CONTROLLER_GRACE) {
+      const next = R.roster.find((p) => p.pid !== R.controller && isOn(p.pid));
+      if (next) { toast(`${next.name} now has the remote`); setController(next.pid); lastBroadcast = now; return; }
     }
     if (now - lastBroadcast >= T.STATE_EVERY) { lastBroadcast = now; broadcastState(); }
     if (G && G.deadline) updateTimerChip();
@@ -446,8 +562,10 @@ export async function startHost(root) {
         h('div.picker', null, games.map((g) => gameCard(g))),
         optionsPanel(sel),
         h('div.start-row', null,
-          kit.actionButton(`Start ${sel.name}`, { big: true, reason, onClick: () => startGame(false) }),
-          h('button.btn.secondary', { onclick: () => kit.showTutorial(sel, { cls: 'tv' }) }, 'How to play'))),
+          kit.actionButton(`Start ${sel.name}`, { big: true, reason, onClick: () => tvStart(false) }),
+          h('button.btn.secondary', { onclick: () => kit.showTutorial(sel, { cls: 'tv' }) }, 'How to play')),
+        R.controller ? h('p.hint.remote-hint', null, '🎮 ', h('b', null, nameOf(R.controller)), "'s phone is the remote. Pick the game and start it from there.") : null,
+        updateReady ? h('p.hint', null, 'A new version is ready and will load after this game.') : null),
       h('aside.lobby-players', null,
         h('h2', null, `Players `, h('span.count', null, String(R.roster.length))),
         R.roster.length ? rosterList(sel) : h('p.empty', null, 'Waiting for players… scan the code to join.'),
@@ -467,7 +585,7 @@ export async function startHost(root) {
     else if (tooMany) note = `${g.name} seats ${g.maxPlayers}. Extra players watch.`;
     return h('button.game-card' + (selected ? '.selected' : '') + (tooFew ? '.greyed' : ''), {
       'aria-pressed': selected ? 'true' : 'false',
-      onclick: () => { if (R.lobby.gameId !== g.id) { R.lobby = { gameId: g.id, options: defaults(g) }; bump(); } },
+      onclick: () => selectGame(g.id),
     },
     h('div.gc-name', null, g.name, g.dev ? h('span.tag', null, 'dev') : null),
     h('div.gc-tag', null, g.tagline || ''),
@@ -479,7 +597,7 @@ export async function startHost(root) {
     const opts = M.options || [];
     if (!opts.length) return null;
     const cur = { ...defaults(M), ...R.lobby.options };
-    const setOpt = (id, v) => { R.lobby.options = { ...cur, [id]: v }; bump(); };
+    const setOpt = (id, v) => setOption(id, v);
     return h('div.options', null, opts.map((o) => h('div.opt', null,
       h('span.opt-label', null, o.label),
       o.type === 'bool'
@@ -493,20 +611,15 @@ export async function startHost(root) {
       return h('li.roster-row' + (p.sitOut || hiddenBlocked ? '.out' : ''), { dataset: { pid: p.pid } },
         kit.onlineDot(isOn(p.pid)),
         h('span.seat', null, String(i + 1)),
-        h('span.r-name', null, p.name, hiddenBlocked ? h('span.tag.bad', null, "Browser can't do hidden cards") : null),
+        h('span.r-name', null, p.name, R.controller === p.pid ? h('span.tag.remote', { title: 'This phone is the remote' }, '🎮 remote') : null, hiddenBlocked ? h('span.tag.bad', null, "Browser can't do hidden cards") : null),
         h('span.r-tools', null,
           h('button.icon-btn', { title: 'Move up', 'aria-label': `Move ${p.name} up`, disabled: i === 0, onclick: () => move(i, -1) }, '↑'),
           h('button.icon-btn', { title: 'Move down', 'aria-label': `Move ${p.name} down`, disabled: i === R.roster.length - 1, onclick: () => move(i, 1) }, '↓'),
-          h('button.chip' + (p.sitOut ? '.off' : '.on'), { title: 'Toggle playing / sitting out', onclick: () => { p.sitOut = !p.sitOut; bump(); } }, p.sitOut ? 'Sitting out' : 'Playing'),
+          h('button.chip' + (p.sitOut ? '.off' : '.on'), { title: 'Toggle playing / sitting out', onclick: () => setSitOut(p.pid, !p.sitOut) }, p.sitOut ? 'Sitting out' : 'Playing'),
           h('button.icon-btn.danger', { title: 'Kick', 'aria-label': `Kick ${p.name}`, onclick: () => kick(p) }, '✕')));
     }));
   }
-  function move(i, d) {
-    const j = i + d;
-    if (j < 0 || j >= R.roster.length) return;
-    [R.roster[i], R.roster[j]] = [R.roster[j], R.roster[i]];
-    bump();
-  }
+  function move(i, d) { moveSeat(R.roster[i].pid, d); }
   async function kick(p) {
     if (await confirmSheet({ title: `Remove ${p.name}?`, body: 'They can scan the code again to rejoin.', yes: 'Remove', danger: true })) removePlayer(p.pid, true);
   }
@@ -546,7 +659,7 @@ export async function startHost(root) {
       sendTo(pend.from, { t: 'notice', kind: 'approved', kx });
     } else {
       sendTo(pid, { t: 'notice', kind: 'denied', kx });
-      save(); render();
+      bump();
     }
   }
 
@@ -573,6 +686,7 @@ export async function startHost(root) {
         phase ? kit.phasePill(phase.text || phase, phase.kind || '') : null,
         h('span.spacer'),
         timerChip,
+        updateReady ? h('span.pill.warn', { title: 'Loads when you go back to the lobby' }, 'Update after this game') : null,
         kit.joinChip(R.code),
         kit.connBadge(net.status),
         actions.map((a) => h('button.btn' + (a.primary ? '.primary' : '.secondary') + '.sm', { disabled: !!a.reason, title: a.reason || (a.primary ? 'Space' : ''), onclick: () => a.pid ? actFor(a.pid, a.intent) : hostAct(a.intent) }, a.label)),
@@ -592,7 +706,7 @@ export async function startHost(root) {
       kit.podium(G.results, nameOf),
       h('div.row.center', null,
         M.undoable && G.undo.length ? h('button.btn.secondary', { onclick: undo }, '↶ Undo') : null,
-        h('button.btn.primary.big', { onclick: () => startGame(true) }, 'Play again'),
+        h('button.btn.primary.big', { onclick: () => tvStart(true) }, 'Play again'),
         h('button.btn.secondary.big', { onclick: backToLobby }, 'Back to lobby'))));
   }
 
@@ -602,7 +716,7 @@ export async function startHost(root) {
       h('button.btn.secondary', { onclick: () => { close(); kit.showTutorial(M || byId[R.lobby.gameId], { cls: 'tv' }); } }, 'How to play'),
       h('div.opt', null, h('span.opt-label', null, 'Turn timer'),
         h('div.seg', null, [0, 30, 60, 90].map((s) => h('button' + (R.settings.timer === s ? '.on' : ''), {
-          onclick: () => { R.settings.timer = s; if (R.game) R.game.deadline = null; afterChange([]); close(); },
+          onclick: () => { setTimer(s); close(); },
         }, s ? s + 's' : 'Off')))),
       h('button.btn.secondary', { onclick: () => { navigator.clipboard?.writeText(joinUrl()).then(() => toast('Join link copied')).catch(() => toast(joinUrl())); } }, 'Copy join link'),
       R.game ? h('button.btn.secondary', { onclick: async () => { close(); if (await confirmSheet({ title: 'End this game?', body: 'Everyone goes back to the lobby. Scores are lost.', yes: 'End game', danger: true })) backToLobby(); } }, 'End game → lobby') : null,
@@ -635,7 +749,7 @@ export async function startHost(root) {
     window.__gn = {
       role: 'host',
       get R() { return R; },
-      rng, net, undo, hostAct, actFor, startGame, backToLobby, approve, deny,
+      rng, net, undo, hostAct, actFor, startGame, backToLobby, approve, deny, setController,
       get forged() { return forged; },
       privCache, seen,
     };

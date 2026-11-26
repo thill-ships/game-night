@@ -20,7 +20,7 @@ async function openHost(context, { errors = [], fresh = true, query = '' } = {})
     await page.goto('/index.html');
     await page.evaluate(() => localStorage.clear());
   }
-  await page.goto('/?host&dev' + query);
+  await page.goto('/?host&dev&local' + query);
   await expect(page.locator('.lobby, .tv-game').first()).toBeVisible();
   const code = await page.evaluate(() => window.__gn.R.code);
   return { page, code };
@@ -31,10 +31,10 @@ async function openPlayer(context, code, name, { errors = [] } = {}) {
   watchErrors(page, errors);
   await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`/?g=${code}&dev`);
+  await page.goto(`/?g=${code}&dev&local`);
   await page.getByLabel('Your name').fill(name);
   await page.getByRole('button', { name: 'Join' }).click();
-  await expect(page.locator('.youre-in, .phone-stage').first()).toBeVisible();
+  await expect(page.locator('.youre-in, .ctl-lobby, .phone-stage').first()).toBeVisible();
   const pid = await page.evaluate(() => window.__gn.pid);
   return { page, pid, name };
 }

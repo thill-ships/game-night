@@ -30,12 +30,13 @@ export const phone = {
     ];
 
     if (!me.isSpectator) {
+      // On your turn, Roll is the biggest thing on the screen; Bank is always the smaller button.
       if (myTurn && pub.phoneRoll) {
-        parts.push(kit.actionButton('🎲 Roll', { kind: 'secondary', big: true, cls: 'roll-btn', onClick: () => ui.send({ type: 'roll' }) }));
+        parts.push(kit.actionButton('🎲 ROLL', { kind: 'primary', big: true, cls: 'roll-btn', onClick: () => ui.send({ type: 'roll' }) }));
       }
       const reason = bankReason(pub, me.pid);
       parts.push(kit.actionButton('BANK', {
-        kind: 'primary', big: true, cls: 'bank-btn', reason,
+        kind: 'secondary', big: true, cls: 'bank-btn' + (reason ? '' : '.ready'), reason,
         sub: reason ? null : `+${pub.bank}`,
         onClick: () => ui.send({ type: 'bank' }),
       }));
@@ -81,7 +82,9 @@ function roundCard(pub, me, ui) {
   return h('div.card.bp-round' + (re.reason === 'bust' ? '.bust' : ''), null,
     h('div.re-title', null, re.reason === 'bust' ? 'Seven!' : 'Everyone banked'),
     mine ? h('div.bp-gain' + (g > 0 ? '.won' : '.lost'), null, g > 0 ? `You banked +${g}` : 'You got 0 this round') : null,
-    h('p.hint', null, pub.round >= pub.rounds ? 'That was the last round!' : 'Waiting for the host to start the next round.'));
+    h('p.hint', null, pub.round >= pub.rounds ? 'That was the last round!'
+      : ui.controller === me.pid ? 'Tap Next round below when everyone is ready.'
+      : ui.controller ? `Waiting for ${ui.name(ui.controller)} to start the next round.` : 'Waiting for the next round.'));
 }
 
 function ordinal(n) {

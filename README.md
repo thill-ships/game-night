@@ -13,10 +13,12 @@ A TV + phones game hub. One computer is mirrored to the TV and hosts. Everyone p
 | `/?g=ABCD` | phones | Join, then lobby → game → results |
 
 - A **room** lasts the whole night; games run inside it. Players join once.
+- **The remote:** the first phone to join gets 🎮 the remote. From it they pick the game, set options, order seats, start, run host actions (Next round, Roll for someone, Skip, Undo), play again or go back to the lobby, and approve new devices. Nobody needs to touch the TV after it shows the QR code. The remote can be handed off from the phone's menu; if that phone is offline, anyone can tap **Take the remote** (and after 2 minutes offline it passes automatically). The TV's own buttons keep working too.
 - **Seats** follow the player list order on the TV (↑ ↓ to reorder). Toggle **Playing / Sitting out** to choose who sits in when there are more players than a game allows. Everyone else watches as a spectator.
 - **Host keys:** `Space` = the main action (Roll, Next round), `U` = undo, `F` = full screen. The **Menu** has How to play, a turn timer, End game, Copy join link and New room.
 - If the TV refreshes or the laptop sleeps, it resumes exactly where it was (everything is saved in the host browser's `localStorage`). Use **Menu → New room** to start over.
 - If a phone shows "Reconnecting…", it catches up on its own. A phone that refreshes keeps its seat.
+- **Updates:** after you push a change, open phones show "A new version is ready · Update" within a minute, and one tap reloads them into the same seat. The TV updates itself, but only while it's in the lobby, never during a game. Nobody ever needs a hard refresh: a service worker makes every load fetch the newest deploy.
 - If a phone lost its storage (or someone picks up a different phone), they join again with **the same name**. The TV asks "*Name* is trying to reconnect from a new device. Allow?". Allow hands them their seat back; "No, new player" lets them in as someone new.
 
 ## Setup
@@ -40,7 +42,7 @@ Free-tier budget: an 8-player, 2-hour night is roughly 80k messages (the free ti
 
 ### 3. Deploy on GitHub Pages
 
-**Settings → Pages → Deploy from a branch →** `main` / `(root)`. The `.nojekyll` file matters: without it, Pages would drop `games/_sample`.
+**Settings → Pages → Source: GitHub Actions.** The workflow in `.github/workflows/pages.yml` deploys every push to `main` and stamps the commit id into `version.json` and `engine/version.js`; that's what powers the "Update" prompt. (Deploying straight from a branch also works, but then there are no update prompts; the copy in the repo says `dev`, which turns them off. The `.nojekyll` file keeps branch deploys from dropping `games/_sample`.)
 
 ### Before game night (manual check)
 
@@ -68,7 +70,7 @@ phone ──intent──▶ host engine ──▶ game.apply() ──▶ new sta
 | host → one | `ack` | `to, n, ok, err` |
 | host → one | `notice` | `to, kind` (`kicked`, `approve-wait`, `approved`, `denied`, `replaced`), `kx` (which device) |
 | phone → host | `hello` | `pid, name, key, need, waiting` |
-| phone → host | `act` | `pid, iv, ct` (sealed `{ n, intent }`) |
+| phone → host | `act` | `pid, iv, ct` (sealed `{ n, intent }`). Remote commands are intents too: `{ type: '@ctl', op, … }`, accepted only from the controller |
 | phone → host | `bye` | `pid` |
 
 Every message carries `v` (protocol version) and `room`. A version mismatch tells phones to refresh.
@@ -77,6 +79,8 @@ Every message carries `v` (protocol version) and `room`. A version mismatch tell
 
 ```
 index.html            shell: loads config, libs, engine/main.js
+sw.js                 service worker: every load gets the newest deploy
+version.json          latest build id ('dev' in the repo; stamped on deploy)
 config.js             Supabase URL + anon key (blank = local test mode)
 lib/                  supabase-js 2.119.0 UMD, qrcode-generator 2.0.4 (vendored)
 engine/
@@ -87,6 +91,9 @@ engine/
   rng.js              crypto shuffle/draw (?seed=N for a reproducible PRNG)
   room-host.js        roster, presence, key pinning, seats, lifecycle, undo, timers, persistence, TV lobby
   room-player.js      join/rejoin, intents with retry, state + private views, phone shell
+  controller.js       the remote: lobby, in-game and results controls on the first phone
+  update.js           update checks + service worker registration
+  version.js          build id ('dev' in the repo; stamped on deploy)
   ui/                 shared UI kit (below)
   styles/base.css     felt theme, TV scaling, phone layout
 games/
@@ -132,7 +139,8 @@ export default {
 - **Simultaneous choices**: return everyone still choosing from `activePids`, keep choices in hidden state, and only reveal in `apply` once the last one arrives. Show "X of N ready" from `publicView`.
 - **Multi-step turns** (discard down to 10, keep 2 of 3): explicit sub-phases in state with their own intents, never one giant client-side intent.
 - **Static data** (cards, map geometry) lives in the game folder. State refers to it by id. Keep `publicView` small (under ~20 KB).
-- **`me`** on phones = `{ pid, seat, isActive, isSpectator }`. `ui.send(intent)` resolves to `{ ok, err }` and toasts errors. `ui.local` is scratch space that survives re-renders (keep in-progress selections there).
+- **`hostActions(pub, ui)`** shows up on the TV toolbar and on the remote phone. The one marked `primary` (and not disabled) becomes the big button on the remote and the TV's Space key.
+- **`me`** on phones = `{ pid, seat, isActive, isSpectator, isController }`; `ui.controller` is the pid holding the remote. `ui.send(intent)` resolves to `{ ok, err }` and toasts errors. `ui.local` is scratch space that survives re-renders (keep in-progress selections there).
 
 ### UI kit (`ui.kit`)
 
@@ -147,6 +155,6 @@ npm install
 npx playwright test
 ```
 
-Runs in local mode with one 1920×1080 host page (plus a 1366×768 layout run) and 390×844 phone pages. Covers Bank end to end (seats, phone and TV rolls, safe and risky banking, rejected bank while rolling, forced bust, everyone banked, undo, late joiner, kick + rejoin, TV refresh mid-roll, phone refresh, podium, play again, back to lobby, turn timer). Also covers the engine via the sample game (private views only reach their owner, no hand data in plaintext on the wire, forged intents rejected, new-device approval, reclaiming a seat after lost storage, simultaneous reveal, keep 2 of 3, spectators). Every test also checks for console errors and sideways overflow on phones.
+Also covers the remote (lobby, game, results, hand-off, take-over, approvals) and the update prompt. Runs in local mode with one 1920×1080 host page (plus a 1366×768 layout run) and 390×844 phone pages. Covers Bank end to end (seats, phone and TV rolls, safe and risky banking, rejected bank while rolling, forced bust, everyone banked, undo, late joiner, kick + rejoin, TV refresh mid-roll, phone refresh, podium, play again, back to lobby, turn timer). Also covers the engine via the sample game (private views only reach their owner, no hand data in plaintext on the wire, forged intents rejected, new-device approval, reclaiming a seat after lost storage, simultaneous reveal, keep 2 of 3, spectators). Every test also checks for console errors and sideways overflow on phones.
 
 Dev helpers: add `?dev` to any URL to expose `window.__gn` (the host's `__gn.rng.rigDice([3, 4])` forces the next roll), and `?seed=123` on the host for a reproducible PRNG.

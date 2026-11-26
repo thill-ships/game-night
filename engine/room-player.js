@@ -4,6 +4,8 @@ import { createNet } from './net.js';
 import * as C from './crypto.js';
 import * as kit from './ui/index.js';
 import { loadGames } from '../games/registry.js';
+import { watchUpdates } from './update.js';
+import * as Ctl from './controller.js';
 
 const { h, clear, toast, sheet, confirmSheet } = kit;
 
@@ -30,6 +32,8 @@ export async function startPlayer(root, code) {
   let timerDeadline = null;
   let phoneLocal = {}, localFor = null;
   const pending = new Map();
+  let updateBuild = null;
+  watchUpdates((b) => { updateBuild = b; paintBars(); });
 
   history.replaceState(null, '', urlWith('g=' + code));
 
@@ -133,6 +137,7 @@ export async function startPlayer(root, code) {
       else if (m.kind === 'approve-wait') mode = 'approve-wait';
       else if (m.kind === 'denied') mode = 'denied';
       else if (m.kind === 'replaced') mode = 'replaced';
+      else if (m.kind === 'controller') { toast('🎮 You have the remote now'); kit.vibrate([40, 30, 40]); }
       else if (m.kind === 'approved') {
         if (m.adopt && m.adopt !== pid) {
           // The host gave this device an existing seat: take over its pid, keep our key.
@@ -194,10 +199,17 @@ export async function startPlayer(root, code) {
     });
   }
 
+  const isOnline = (id) => !!S?.roster?.find((p) => p.pid === id)?.on;
+  const ctl = (op, args = {}) => ui.send({ type: '@ctl', op, ...args });
+  const ctlCtx = () => ({ S, pid, byId, nameOf, ctl });
+  const isController = () => !!S && S.controller === pid;
+
   const ui = {
     kit,
     get room() { return code; },
     name: nameOf,
+    isOnline,
+    get controller() { return S?.controller || null; },
     get roster() { return S?.roster || []; },
     get local() { return phoneLocal; },
     vibrate: kit.vibrate,
@@ -216,6 +228,7 @@ export async function startPlayer(root, code) {
       seat: me ? me.seat : null,
       isActive: !!g?.active?.includes(pid),
       isSpectator: !g || !me || !!me.spectator,
+      isController: isController(),
     };
   }
 
@@ -252,6 +265,7 @@ export async function startPlayer(root, code) {
     return h('header.phone-top', null,
       h('span.pt-room', null, code),
       h('span.pt-title', null, g ? g.name : 'Game Night'),
+      isController() && mode === 'in' ? h('span.tag.remote', { title: 'You have the remote' }, '🎮') : null,
       h('span.timer', { id: 'phone-timer' }),
       h('span.dot-online', { id: 'phone-conn' }),
       mode !== 'form' ? h('button.icon-btn', { 'aria-label': 'Menu', onclick: openMenu }, '☰') : null);
@@ -262,6 +276,9 @@ export async function startPlayer(root, code) {
     const silent = mode !== 'form' && net && Date.now() - lastHeard > T.RECONNECT_MS;
     clear(bars);
     if (silent && mode !== 'version') bars.append(h('div.reconnecting', { role: 'status' }, 'Reconnecting…'));
+    if (updateBuild && mode !== 'version') bars.append(h('div.update-bar', { role: 'status' },
+      h('span', null, 'A new version is ready'),
+      h('button.btn.sm.primary', { onclick: () => location.reload() }, 'Update')));
     const dot = document.getElementById('phone-conn');
     if (dot) dot.classList.toggle('on', !silent && !!S);
     const t = document.getElementById('phone-timer');
@@ -273,11 +290,12 @@ export async function startPlayer(root, code) {
   }
 
   function renderLobby(body) {
+    if (isController()) { body.append(Ctl.lobbyPanel(ctlCtx())); return; }
     const me = meIn();
     const M = byId[S.lobby?.gameId];
     body.append(h('div.phone-lobby', null,
       h('div.youre-in', null, h('div.big-icon', null, '✓'), h('h2', null, "You're in, ", h('span', null, me?.name || name), '!'),
-        h('p.hint', null, me?.sitOut ? "You're sitting out the next game." : 'Watch the TV. The host will start a game soon.')),
+        h('p.hint', null, me?.sitOut ? "You're sitting out the next game." : S.controller ? `🎮 ${nameOf(S.controller)} has the remote and will start a game soon.` : 'Watch the TV. A game will start soon.')),
       M ? h('div.card.game-preview', null,
         h('div.gc-label', null, 'Up next'),
         h('div.gc-name', null, M.name), h('div.gc-tag', null, M.tagline || ''),
@@ -290,11 +308,13 @@ export async function startPlayer(root, code) {
     const g = S.game, M = byId[g.id];
     if (!M) { body.append(center('🔄', 'Refresh to update', 'This phone does not have that game yet.', h('button.btn.primary.big', { onclick: () => location.reload() }, 'Refresh'))); return; }
     const me = meInfo();
+    if (isController()) { const pc = Ctl.pendingCards(ctlCtx()); if (pc) body.append(pc); }
     if (g.over) {
       body.append(h('div.phone-results', null,
         h('h2.results-title', null, kit.winnerLine(g.results, nameOf)),
         kit.podium(g.results, nameOf),
-        h('p.hint.center', null, 'Waiting for the host to play again or go back to the lobby.')));
+        isController() ? Ctl.resultsControls(ctlCtx())
+          : h('p.hint.center', null, `Waiting for ${nameOf(S.controller)} to play again or go back to the lobby.`)));
       return;
     }
     if (g.hasPriv && !kp && !me.isSpectator) {
@@ -306,6 +326,7 @@ export async function startPlayer(root, code) {
     body.append(stage);
     try { M.phone.render(stage, g.pub, me.isSpectator ? null : priv, me, ui); }
     catch (e) { console.error(e); stage.append(h('p.error', null, 'Render error: ' + e.message)); }
+    if (isController()) { body.classList.add('has-ctl-bar'); body.append(Ctl.gameBar(ctlCtx(), M, g.pub, ui)); }
   }
 
   function openMenu() {
@@ -313,6 +334,10 @@ export async function startPlayer(root, code) {
     sheet((close) => h('div.menu', null,
       M ? h('button.btn.secondary', { onclick: () => { close(); kit.showTutorial(M); } }, `How to play ${M.name}`) : null,
       h('button.btn.secondary', { onclick: () => { close(); changeName(); } }, 'Change name'),
+      isController() ? h('button.btn.secondary', { onclick: () => { close(); Ctl.handoffSheet(ctlCtx()); } }, '🎮 Hand off the remote') : null,
+      isController() && !S.game ? Ctl.timerRow(ctlCtx(), close) : null,
+      S && S.controller && !isController() && !isOnline(S.controller) ? h('button.btn.secondary', { onclick: () => { close(); ctl('claim'); } }, `🎮 Take the remote (${nameOf(S.controller)} is offline)`) : null,
+      S && !S.controller ? h('button.btn.secondary', { onclick: () => { close(); ctl('claim'); } }, '🎮 Take the remote') : null,
       h('button.btn.danger', { onclick: async () => {
         close();
         if (!(await confirmSheet({ title: 'Leave the room?', body: 'You can rejoin with the code later.', yes: 'Leave', danger: true }))) return;

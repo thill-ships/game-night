@@ -1,6 +1,9 @@
 // Routing: hub landing (/), host (/?host), player (/?g=ABCD).
 import { params, cleanCode, cleanName, isLocalMode, urlWith } from './proto.js';
 import { h, clear } from './ui/dom.js';
+import { registerServiceWorker } from './update.js';
+
+registerServiceWorker();
 
 const root = document.getElementById('app');
 

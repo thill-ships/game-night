@@ -119,7 +119,7 @@ test('forged intents are rejected and a new device must be approved', async ({ c
   await a2.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
   await a2.setViewportSize({ width: 390, height: 844 });
   await a2.addInitScript(({ pid, code }) => { sessionStorage.setItem('gn.pid', pid); sessionStorage.setItem('gn.name', 'Ana'); sessionStorage.setItem('gn.room', code); }, { pid: a.pid, code });
-  await a2.goto(`/?g=${code}&dev`);
+  await a2.goto(`/?g=${code}&dev&local`);
   await expect(a2.getByText('Waiting for the host to approve this phone')).toBeVisible();
   await expect(host.locator('.pending-row')).toContainText('Ana is trying to reconnect from a new device. Allow?');
   // Unapproved device can't act.
@@ -184,7 +184,7 @@ async function openPlayerRaw(context, code, name, errors) {
   watchErrors(page, errors);
   await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.abort());
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`/?g=${code}&dev`);
+  await page.goto(`/?g=${code}&dev&local`);
   await page.getByLabel('Your name').fill(name);
   await page.getByRole('button', { name: 'Join' }).click();
   return page;
@@ -206,7 +206,7 @@ test('spectators get no private data; dev game hidden without ?dev', async ({ co
   const plain = await context.newPage();
   await plain.goto('/index.html');
   await plain.evaluate(() => localStorage.clear());
-  await plain.goto('/?host');
+  await plain.goto('/?host&local');
   await expect(plain.locator('.game-card')).toHaveCount(1);
   await expect(plain.locator('.game-card')).toContainText('Bank');
   expect(errors).toEqual([]);

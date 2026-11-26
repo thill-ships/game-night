@@ -1,4 +1,4 @@
-// Playwright runs everything in local mode (blank config.js → BroadcastChannel).
+// Playwright runs everything in local mode: every test URL carries &local (BroadcastChannel, no Supabase).
 const { defineConfig } = require('@playwright/test');
 
 module.exports = defineConfig({

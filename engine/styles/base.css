@@ -281,6 +281,34 @@ body.phone, body.landing { font-size: 16px; }
 .phone-results table.results { font-size: 14px; }
 .phone-results .step { min-width: 5em; }
 
+/* ---------- The remote (controller phone) ---------- */
+.tag.remote { background: rgba(246, 196, 83, 0.2); color: var(--gold); text-transform: none; }
+.remote-hint { margin: 0; }
+.ctl-lobby { display: flex; flex-direction: column; gap: 12px; }
+.ctl-lobby h3 { margin: 8px 0 0; }
+.ctl-badge { align-self: center; background: rgba(246, 196, 83, 0.15); color: var(--gold); font-weight: 700; padding: 6px 14px; border-radius: 999px; }
+.ctl-games { display: grid; gap: 10px; }
+.ctl-games .game-card { padding: 12px 14px; }
+.ctl-games .gc-name { font-size: 22px; }
+.ctl-lobby .options { padding: 12px; }
+.ctl-lobby .opt { flex-wrap: wrap; }
+.ctl-start { width: 100%; }
+.ctl-lobby .roster-row { padding: 6px 8px; gap: 6px; }
+.ctl-lobby .r-tools .icon-btn { width: 34px; height: 34px; }
+.ctl-pending { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.ctl-pend { border-color: var(--gold); }
+.ctl-pend p { margin: 0 0 10px; }
+.ctl-bar {
+  position: sticky; bottom: 0; z-index: 15; display: flex; gap: 10px; align-items: stretch;
+  margin: 16px -16px calc(-32px - env(safe-area-inset-bottom)); padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  background: var(--rail); border-top: 1px solid var(--line);
+}
+.ctl-primary { flex: 1; }
+.ctl-more { flex: none; min-width: 56px; flex-direction: row; gap: 6px; }
+.ctl-bar .ctl-more:only-child { flex: 1; }
+.ctl-results { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.update-bar { display: flex; align-items: center; justify-content: center; gap: 12px; background: var(--ivory); color: var(--ink); font-weight: 700; padding: 6px 12px; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001s !important; transition-duration: 0.001s !important; }
 }

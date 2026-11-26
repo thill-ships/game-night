@@ -12,6 +12,6 @@ test('landing, host lobby and a phone join without errors', async ({ context }) 
   await expect(host.locator('.qr-code')).toHaveText(code);
   const a = await openPlayer(context, code, 'Ana', { errors });
   await expect(host.locator('.roster-row')).toHaveCount(1);
-  await expect(a.page.locator('.youre-in')).toContainText('Ana');
+  await expect(a.page.locator('.ctl-badge')).toContainText('You have the remote');
   expect(errors).toEqual([]);
 });

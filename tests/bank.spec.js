@@ -241,7 +241,8 @@ test('final podium, play again, back to lobby', async ({ context }) => {
   await expect(host.getByRole('button', { name: 'Back to lobby' })).toBeVisible();
   await host.getByRole('button', { name: 'Back to lobby' }).click();
   await expect(host.locator('.lobby')).toBeVisible();
-  await expect(a.page.locator('.youre-in')).toBeVisible();
+  await expect(a.page.locator('.ctl-lobby')).toBeVisible(); // Ana joined first: she has the remote
+  await expect(b.page.locator('.youre-in')).toBeVisible();
   expect((await R(host)).lobby.options.rounds).toBe(10);
   expect(errors).toEqual([]);
 });

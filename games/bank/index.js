@@ -29,14 +29,17 @@ export default {
   results: rules.results,
   undoable: true,
 
-  hostActions(pub) {
+  hostActions(pub, ui) {
     if (pub.phase === 'roundEnd') {
       return [{ label: pub.round >= pub.rounds ? 'See results' : 'Next round', intent: { type: 'next' }, primary: true }];
     }
     if (pub.phase !== 'roll') return [];
     const reason = pub.rolling ? 'Rolling…' : !pub.roller ? 'Nobody to roll' : null;
+    // If the roller's phone is offline, rolling for them becomes the main action.
+    const offline = !!(pub.roller && ui?.isOnline && !ui.isOnline(pub.roller));
+    const who = pub.roller && ui?.name ? ui.name(pub.roller) : 'them';
     return [
-      { label: pub.phoneRoll ? 'Roll for them' : '🎲 Roll', intent: { type: 'roll' }, primary: !pub.phoneRoll, reason },
+      { label: pub.phoneRoll ? `🎲 Roll for ${who}` : '🎲 Roll', intent: { type: 'roll' }, primary: !pub.phoneRoll || offline, reason },
       { label: 'Skip turn', intent: { type: 'skip' }, reason },
     ];
   },
