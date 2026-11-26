@@ -1,0 +1,12 @@
+{
+  "name": "game-night",
+  "private": true,
+  "description": "TV + phones game hub. Static site, no build step. This file only exists for the Playwright tests.",
+  "scripts": {
+    "serve": "node tests/serve.js",
+    "test": "playwright test --trace off"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

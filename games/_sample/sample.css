@@ -1,0 +1,11 @@
+.sample-tv { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2.4fr); gap: calc(var(--u) * 2); padding: calc(var(--u) * 1.5); }
+.sample-status { display: flex; flex-direction: column; gap: 1em; overflow: auto; }
+.sample-board .slot { fill: rgba(6, 40, 31, 0.5); stroke: rgba(247, 242, 230, 0.15); stroke-dasharray: 8 8; }
+.sample-board .bcard rect { fill: var(--ivory); }
+.sample-board .bcard .num { font-family: var(--slab); font-size: 96px; fill: var(--ink); }
+.sample-board .bcard .who { font-family: var(--sans); font-weight: 700; font-size: 22px; fill: var(--ink); }
+.sample-board .bcard { animation: land 0.4s ease; }
+@keyframes land { from { opacity: 0; } }
+.sample-phone { display: flex; flex-direction: column; gap: 12px; }
+.sample-phone h3 { margin: 6px 0 0; font-size: 18px; }
+.scard { font-family: var(--slab); font-size: 34px; }
