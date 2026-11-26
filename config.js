@@ -3,6 +3,6 @@
 // For real game nights, paste your Supabase project URL and anon/publishable key.
 // The anon key is public by design; only Realtime Broadcast is used (no tables, no auth).
 window.GN_CONFIG = {
-  supabaseUrl: '',
-  supabaseKey: '',
+  supabaseUrl: 'https://yehpygarkxdopdvugifk.supabase.co',
+  supabaseKey: 'sb_publishable_sGJHMMHbmIyLcORXh2pauw_CePLfJDo',
 };
